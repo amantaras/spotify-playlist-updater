@@ -333,43 +333,55 @@ function App() {
     setView('editor')
   }
 
-  async function saveConfiguration() {
-    if (!clientId) return
-    setBusy(editingId ? 'Saving playlist settings' : 'Adding playlist')
+  function saveConfiguration() {
     setNotice(null)
-    try {
-      const client = new SpotifyClient(clientId)
-      const verified = await loadVerification(client)
-      if (!verified.target || !verified.source || !verified.artist) {
-        const failed = verified.resources.find((resource) => !resource.valid)
-        throw new Error(failed?.error ?? 'Verify all Spotify links before saving.')
-      }
-      saveMix({
-        id: verified.target.id,
-        targetName: verified.target.name,
-        sourceName: verified.source.name,
-        artistName: verified.artist.name,
-        targetUrl,
-        sourceUrl,
-        artistUrl,
-        maximumSongs,
-        artistSongCount,
-        lastUpdated: savedMixes.find((mix) => mix.id === verified.target?.id)?.lastUpdated,
-        targetImageUrl: verified.target.images[0]?.url,
-        sourceImageUrl: verified.source.images[0]?.url,
-        artistImageUrl: verified.artist.images[0]?.url,
-        targetOwner: verified.target.owner.display_name ?? verified.target.owner.id,
-        targetTotal: playlistTotal(verified.target),
-        sourceTotal: playlistTotal(verified.source),
-      })
-      setNotice({ kind: 'success', message: `${verified.target.name} was saved.` })
-      setEditingId(null)
-      setView('dashboard')
-    } catch (error) {
-      setNotice({ kind: 'error', message: errorMessage(error) })
-    } finally {
-      setBusy(null)
-    }
+    const targetId = spotifyIdFromUrl(targetUrl, 'playlist')
+    const sourceId = spotifyIdFromUrl(sourceUrl, 'playlist')
+    const artistId = spotifyIdFromUrl(artistUrl, 'artist')
+    const existing = savedMixes.find((mix) => mix.id === (editingId ?? targetId))
+    const previousTarget = existing?.targetUrl === targetUrl ? existing : undefined
+    const previousSource = existing?.sourceUrl === sourceUrl ? existing : undefined
+    const previousArtist = existing?.artistUrl === artistUrl ? existing : undefined
+    const targetName = verification?.target?.name ?? previousTarget?.targetName
+      ?? resourceFallbackName('Unverified target', targetId)
+    const sourceName = verification?.source?.name ?? previousSource?.sourceName
+      ?? resourceFallbackName('Unverified source', sourceId)
+    const artistName = verification?.artist?.name ?? previousArtist?.artistName
+      ?? resourceFallbackName('Unverified artist', artistId)
+    const fullyVerified = verification?.resources.every((resource) => resource.valid) ?? false
+
+    saveMix({
+      id: editingId ?? targetId ?? crypto.randomUUID(),
+      targetName,
+      sourceName,
+      artistName,
+      targetUrl,
+      sourceUrl,
+      artistUrl,
+      maximumSongs,
+      artistSongCount,
+      lastUpdated: existing?.lastUpdated,
+      targetImageUrl: verification?.target?.images[0]?.url ?? previousTarget?.targetImageUrl,
+      sourceImageUrl: verification?.source?.images[0]?.url ?? previousSource?.sourceImageUrl,
+      artistImageUrl: verification?.artist?.images[0]?.url ?? previousArtist?.artistImageUrl,
+      targetOwner: verification?.target
+        ? verification.target.owner.display_name ?? verification.target.owner.id
+        : previousTarget?.targetOwner,
+      targetTotal: verification?.target
+        ? playlistTotal(verification.target)
+        : previousTarget?.targetTotal,
+      sourceTotal: verification?.source
+        ? playlistTotal(verification.source)
+        : previousSource?.sourceTotal,
+    })
+    setNotice({
+      kind: 'success',
+      message: fullyVerified
+        ? `${targetName} was saved.`
+        : `${targetName} was saved without full verification. Spotify access will be checked when you preview or update it.`,
+    })
+    setEditingId(null)
+    setView('dashboard')
   }
 
   async function verifyConfiguration() {
@@ -740,6 +752,10 @@ function Notice({ kind, message }: { kind: 'error' | 'success'; message: string 
 function clamp(value: number, minimum: number, maximum: number) {
   if (!Number.isFinite(value)) return minimum
   return Math.min(maximum, Math.max(minimum, value))
+}
+
+function resourceFallbackName(label: string, spotifyId?: string | null) {
+  return spotifyId ? `${label} (${spotifyId.slice(0, 8)}...)` : label
 }
 
 function errorMessage(error: unknown) {
