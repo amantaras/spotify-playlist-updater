@@ -754,7 +754,7 @@ function resourceError(label: string, error: unknown) {
   const message = errorMessage(error)
   if (message.toLowerCase().includes('resource not found')) {
     if (label === 'Source playlist') {
-      return 'Source playlist is not available through Spotify API for this account. If it is a Spotify-made playlist, copy its songs into a playlist in your library and use that new playlist URL.'
+      return 'Spotify only lets this app read songs from playlists you own or collaborate on. Copy the source songs into one of your playlists and use that new playlist URL.'
     }
     return `${label} could not be found or is not available to this Spotify account.`
   }

@@ -44,7 +44,7 @@ npm run build
 
 After login, the **Playlists** dashboard is the main screen. Use **Add playlist** to create a saved target/source/artist configuration. Each dashboard row can be updated immediately, edited, opened in Spotify, or deleted. **Update all** processes every saved configuration after confirmation and reports progress and failures.
 
-Use **Verify Spotify links** before saving to visually confirm all three resources. Some Spotify-made editorial playlists return `Resource not found` from the Web API even though they open in Spotify. In that case, copy the songs into a playlist in your own library and use the copied playlist as the source.
+Use **Verify Spotify links** before saving to visually confirm all three resources. Spotify's Web API exposes playlist items only when the logged-in user owns the playlist or is a collaborator. Other playlists can return `Resource not found` even though they open in Spotify. Copy their songs into a playlist you own and use that copied playlist as the source.
 
 **Randomized mix** reads every track from the source playlist and the selected artist's albums and singles. It chooses the requested artist allocation first, fills the remaining capacity from the source, deduplicates by Spotify track ID, randomizes the final order, and replaces the target in batches of 100.
 
