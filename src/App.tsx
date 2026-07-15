@@ -14,6 +14,7 @@ import {
   Pencil,
   Plus,
   RefreshCw,
+  ShieldCheck,
   Shuffle,
   Sparkles,
   Trash2,
@@ -52,6 +53,30 @@ type SavedMix = {
   maximumSongs: number
   artistSongCount: number
   lastUpdated?: string
+  targetImageUrl?: string
+  sourceImageUrl?: string
+  artistImageUrl?: string
+  targetOwner?: string
+  targetTotal?: number
+  sourceTotal?: number
+}
+
+type VerifiedResource = {
+  kind: 'target' | 'source' | 'artist'
+  label: string
+  name?: string
+  detail?: string
+  imageUrl?: string
+  url: string
+  valid: boolean
+  error?: string
+}
+
+type VerifiedConfiguration = {
+  resources: VerifiedResource[]
+  target?: SpotifyPlaylist
+  source?: SpotifyPlaylist
+  artist?: Awaited<ReturnType<SpotifyClient['getArtist']>>
 }
 
 type Preview = {
@@ -81,6 +106,7 @@ function App() {
   const [view, setView] = useState<'dashboard' | 'editor'>('dashboard')
   const [editingId, setEditingId] = useState<string | null>(null)
   const [preview, setPreview] = useState<Preview | null>(null)
+  const [verification, setVerification] = useState<VerifiedConfiguration | null>(null)
   const [savedMixes, setSavedMixes] = useState<SavedMix[]>(readSavedMixes)
   const [confirmUpdateAll, setConfirmUpdateAll] = useState(false)
   const [busy, setBusy] = useState<string | null>(null)
@@ -141,10 +167,18 @@ function App() {
   async function loadBase(client: SpotifyClient) {
     const { targetId, sourceId, artistId } = ids()
     const currentUser = user ?? (await client.getCurrentUser())
-    const [target, source] = await Promise.all([
+    const [targetResult, sourceResult] = await Promise.allSettled([
       client.getPlaylist(targetId),
       client.getPlaylist(sourceId),
     ])
+    if (targetResult.status === 'rejected') {
+      throw new Error(resourceError('Target playlist', targetResult.reason))
+    }
+    if (sourceResult.status === 'rejected') {
+      throw new Error(resourceError('Source playlist', sourceResult.reason))
+    }
+    const target = targetResult.value
+    const source = sourceResult.value
     if (target.owner.id !== currentUser.id) {
       throw new Error('The target playlist must be owned by the logged-in account.')
     }
@@ -189,6 +223,12 @@ function App() {
         artistUrl,
         maximumSongs,
         artistSongCount,
+        targetImageUrl: base.target.images[0]?.url,
+        sourceImageUrl: base.source.images[0]?.url,
+        artistImageUrl: artist.images[0]?.url,
+        targetOwner: base.target.owner.display_name ?? base.target.owner.id,
+        targetTotal: playlistTotal(base.target),
+        sourceTotal: playlistTotal(base.source),
       })
     } catch (error) {
       setNotice({ kind: 'error', message: errorMessage(error) })
@@ -274,6 +314,7 @@ function App() {
     setMaximumSongs(mix.maximumSongs)
     setArtistSongCount(mix.artistSongCount)
     setPreview(null)
+    setVerification(null)
     setNotice(null)
     setEditingId(mix.id)
     setView('editor')
@@ -287,6 +328,7 @@ function App() {
     setArtistSongCount(20)
     setEditingId(null)
     setPreview(null)
+    setVerification(null)
     setNotice(null)
     setView('editor')
   }
@@ -297,22 +339,30 @@ function App() {
     setNotice(null)
     try {
       const client = new SpotifyClient(clientId)
-      const base = await loadBase(client)
-      if (!base.artistId) throw new Error('Enter a valid Spotify artist URL.')
-      const artist = await client.getArtist(base.artistId)
+      const verified = await loadVerification(client)
+      if (!verified.target || !verified.source || !verified.artist) {
+        const failed = verified.resources.find((resource) => !resource.valid)
+        throw new Error(failed?.error ?? 'Verify all Spotify links before saving.')
+      }
       saveMix({
-        id: base.targetId,
-        targetName: base.target.name,
-        sourceName: base.source.name,
-        artistName: artist.name,
+        id: verified.target.id,
+        targetName: verified.target.name,
+        sourceName: verified.source.name,
+        artistName: verified.artist.name,
         targetUrl,
         sourceUrl,
         artistUrl,
         maximumSongs,
         artistSongCount,
-        lastUpdated: savedMixes.find((mix) => mix.id === base.targetId)?.lastUpdated,
+        lastUpdated: savedMixes.find((mix) => mix.id === verified.target?.id)?.lastUpdated,
+        targetImageUrl: verified.target.images[0]?.url,
+        sourceImageUrl: verified.source.images[0]?.url,
+        artistImageUrl: verified.artist.images[0]?.url,
+        targetOwner: verified.target.owner.display_name ?? verified.target.owner.id,
+        targetTotal: playlistTotal(verified.target),
+        sourceTotal: playlistTotal(verified.source),
       })
-      setNotice({ kind: 'success', message: `${base.target.name} was saved.` })
+      setNotice({ kind: 'success', message: `${verified.target.name} was saved.` })
       setEditingId(null)
       setView('dashboard')
     } catch (error) {
@@ -320,6 +370,63 @@ function App() {
     } finally {
       setBusy(null)
     }
+  }
+
+  async function verifyConfiguration() {
+    if (!clientId) return
+    setBusy('Verifying Spotify links')
+    setNotice(null)
+    try {
+      const verified = await loadVerification(new SpotifyClient(clientId))
+      const failed = verified.resources.find((resource) => !resource.valid)
+      if (failed) throw new Error(failed.error)
+      setNotice({ kind: 'success', message: 'All three Spotify links are verified. Review them before saving.' })
+    } catch (error) {
+      setNotice({ kind: 'error', message: errorMessage(error) })
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  async function loadVerification(client: SpotifyClient): Promise<VerifiedConfiguration> {
+    const { targetId, sourceId, artistId } = ids()
+    if (!artistId) throw new Error('Enter a valid Spotify artist URL.')
+    const currentUser = user ?? (await client.getCurrentUser())
+    const [targetResult, sourceResult, artistResult] = await Promise.allSettled([
+      client.getPlaylist(targetId),
+      client.getPlaylist(sourceId),
+      client.getArtist(artistId),
+    ])
+    const target = targetResult.status === 'fulfilled' ? targetResult.value : undefined
+    const source = sourceResult.status === 'fulfilled' ? sourceResult.value : undefined
+    const artist = artistResult.status === 'fulfilled' ? artistResult.value : undefined
+    const targetOwned = target?.owner.id === currentUser.id
+    const resources: VerifiedResource[] = [
+      target
+        ? {
+            kind: 'target', label: 'Target playlist', name: target.name,
+            detail: `${playlistTotal(target)} songs · Owned by ${target.owner.display_name ?? target.owner.id}`,
+            imageUrl: target.images[0]?.url, url: targetUrl, valid: targetOwned,
+            error: targetOwned ? undefined : 'Target playlist is valid, but it must be owned by the logged-in Spotify account.',
+          }
+        : failedResource('target', 'Target playlist', targetUrl, targetResult),
+      source
+        ? {
+            kind: 'source', label: 'Source playlist', name: source.name,
+            detail: `${playlistTotal(source)} songs · By ${source.owner.display_name ?? source.owner.id}`,
+            imageUrl: source.images[0]?.url, url: sourceUrl, valid: true,
+          }
+        : failedResource('source', 'Source playlist', sourceUrl, sourceResult),
+      artist
+        ? {
+            kind: 'artist', label: 'Required artist', name: artist.name,
+            detail: 'Spotify artist', imageUrl: artist.images[0]?.url, url: artistUrl, valid: true,
+          }
+        : failedResource('artist', 'Required artist', artistUrl, artistResult),
+    ]
+    const result = { resources, target, source, artist }
+    setVerification(result)
+    return result
   }
 
   function removeSavedMix(id: string) {
@@ -466,8 +573,9 @@ function App() {
                 <thead><tr><th>Target playlist</th><th>Source</th><th>Required artist</th><th>Mix</th><th>Last updated</th><th><span className="sr-only">Actions</span></th></tr></thead>
                 <tbody>{savedMixes.map((mix) => (
                   <tr key={mix.id}>
-                    <td><div className="playlist-cell"><span><ListMusic size={18} /></span><strong>{mix.targetName}</strong></div></td>
-                    <td>{mix.sourceName}</td><td>{mix.artistName}</td>
+                    <td><div className="playlist-cell"><span>{mix.targetImageUrl ? <img src={mix.targetImageUrl} alt="" /> : <ListMusic size={18} />}</span><div><strong>{mix.targetName}</strong><small>{mix.targetOwner ?? 'Spotify playlist'}{mix.targetTotal !== undefined ? ` · ${mix.targetTotal} songs` : ''}</small></div></div></td>
+                    <td><div className="resource-cell">{mix.sourceImageUrl ? <img src={mix.sourceImageUrl} alt="" /> : <Music2 size={14} />}<span>{mix.sourceName}</span></div></td>
+                    <td><div className="resource-cell">{mix.artistImageUrl ? <img src={mix.artistImageUrl} alt="" /> : <UserRound size={14} />}<span>{mix.artistName}</span></div></td>
                     <td><strong>{mix.maximumSongs}</strong> songs · {mix.artistSongCount} artist</td>
                     <td>{mix.lastUpdated ? new Date(mix.lastUpdated).toLocaleString() : 'Not updated yet'}</td>
                     <td><div className="row-actions">
@@ -493,15 +601,15 @@ function App() {
 
           <label>
             <span>Target playlist</span><small>The playlist you own and want to update</small>
-            <div className="input-wrap"><ListMusic size={17} /><input value={targetUrl} onChange={(event) => setTargetUrl(event.target.value)} placeholder="https://open.spotify.com/playlist/..." /></div>
+            <div className="input-wrap"><ListMusic size={17} /><input value={targetUrl} onChange={(event) => { setTargetUrl(event.target.value); setVerification(null) }} placeholder="https://open.spotify.com/playlist/..." /></div>
           </label>
           <label>
             <span>Source playlist</span><small>Music to pull into the target</small>
-            <div className="input-wrap"><Music2 size={17} /><input value={sourceUrl} onChange={(event) => setSourceUrl(event.target.value)} placeholder="https://open.spotify.com/playlist/..." /></div>
+            <div className="input-wrap"><Music2 size={17} /><input value={sourceUrl} onChange={(event) => { setSourceUrl(event.target.value); setVerification(null) }} placeholder="https://open.spotify.com/playlist/..." /></div>
           </label>
           <label>
             <span>Required artist</span><small>Artist catalog to weave into the mix</small>
-            <div className="input-wrap"><UserRound size={17} /><input value={artistUrl} onChange={(event) => setArtistUrl(event.target.value)} placeholder="https://open.spotify.com/artist/..." /></div>
+            <div className="input-wrap"><UserRound size={17} /><input value={artistUrl} onChange={(event) => { setArtistUrl(event.target.value); setVerification(null) }} placeholder="https://open.spotify.com/artist/..." /></div>
           </label>
 
           <div className="number-grid">
@@ -513,6 +621,8 @@ function App() {
             <button className="secondary-button" type="button" onClick={() => setView('dashboard')}>Cancel</button>
             <button className="primary-button" type="button" onClick={saveConfiguration} disabled={Boolean(busy)}><Check size={17} /> Save playlist</button>
           </div>
+
+          <button className="verify-button" type="button" onClick={verifyConfiguration} disabled={Boolean(busy)}><ShieldCheck size={17} /> Verify Spotify links</button>
 
           <button className="primary-button" type="button" onClick={prepareCuration} disabled={Boolean(busy)}>
             {busy ? <LoaderCircle className="spin" size={18} /> : <Shuffle size={18} />} Preview randomized mix
@@ -531,6 +641,8 @@ function App() {
             <div className="empty-state"><LoaderCircle className="spin" size={42} /><h2>{busy}</h2><p>Reading Spotify's catalog and checking for duplicates.</p></div>
           ) : preview ? (
             <PreviewPane preview={preview} onApply={applyPreview} />
+          ) : verification ? (
+            <VerificationPanel verification={verification} />
           ) : (
             <div className="empty-state">
               <span className="empty-icon"><Sparkles size={28} /></span>
@@ -599,6 +711,28 @@ function PreviewPane({ preview, onApply }: { preview: Preview; onApply: () => vo
   )
 }
 
+function VerificationPanel({ verification }: { verification: VerifiedConfiguration }) {
+  const validCount = verification.resources.filter((resource) => resource.valid).length
+  return (
+    <div className="verification-panel">
+      <div className="verification-header">
+        <div><p className="eyebrow">Identity check</p><h2>Confirm your Spotify resources</h2><p>Review the name, artwork, owner, and song count before saving.</p></div>
+        <span className={validCount === 3 ? 'complete' : ''}>{validCount}/3 verified</span>
+      </div>
+      <div className="verification-list">
+        {verification.resources.map((resource) => (
+          <div className={`verification-row${resource.valid ? '' : ' invalid'}`} key={resource.kind}>
+            <span className="verification-art">{resource.imageUrl ? <img src={resource.imageUrl} alt="" /> : resource.kind === 'artist' ? <UserRound size={22} /> : <ListMusic size={22} />}</span>
+            <div className="verification-copy"><small>{resource.label}</small><strong>{resource.name ?? 'Unavailable'}</strong><p>{resource.valid ? resource.detail : resource.error}</p></div>
+            <div className="verification-status">{resource.valid ? <><Check size={15} /> Verified</> : <><CircleAlert size={15} /> Check URL</>}</div>
+            <a href={resource.url} target="_blank" rel="noreferrer" title={`Open ${resource.label} in Spotify`}><ExternalLink size={16} /></a>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function Notice({ kind, message }: { kind: 'error' | 'success'; message: string }) {
   return <div className={`notice ${kind}`}>{kind === 'error' ? <CircleAlert size={17} /> : <Check size={17} />}<span>{message}</span></div>
 }
@@ -610,6 +744,31 @@ function clamp(value: number, minimum: number, maximum: number) {
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : 'Something went wrong. Please try again.'
+}
+
+function playlistTotal(playlist: SpotifyPlaylist) {
+  return playlist.items?.total ?? playlist.tracks?.total ?? 0
+}
+
+function resourceError(label: string, error: unknown) {
+  const message = errorMessage(error)
+  if (message.toLowerCase().includes('resource not found')) {
+    if (label === 'Source playlist') {
+      return 'Source playlist is not available through Spotify API for this account. If it is a Spotify-made playlist, copy its songs into a playlist in your library and use that new playlist URL.'
+    }
+    return `${label} could not be found or is not available to this Spotify account.`
+  }
+  return `${label}: ${message}`
+}
+
+function failedResource(
+  kind: VerifiedResource['kind'],
+  label: string,
+  url: string,
+  result: PromiseSettledResult<unknown>,
+): VerifiedResource {
+  const reason = result.status === 'rejected' ? result.reason : new Error('Resource unavailable')
+  return { kind, label, url, valid: false, error: resourceError(label, reason) }
 }
 
 function readSavedMixes(): SavedMix[] {

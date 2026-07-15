@@ -10,6 +10,8 @@ A browser-based Spotify playlist curator. It can:
 - Remember complete target/source/artist configurations for quick access.
 - Update every saved playlist sequentially with a confirmation step.
 - Manage playlists from a dashboard with add, edit, update, Spotify link, and delete actions.
+- Verify target, source, and artist identities with Spotify names, artwork, owners, and song counts before saving.
+- Persist target, source, and artist artwork for quick dashboard recognition.
 - Log in securely with Spotify Authorization Code + PKCE, without a client secret.
 
 ## Spotify setup
@@ -41,6 +43,8 @@ npm run build
 ## How updates work
 
 After login, the **Playlists** dashboard is the main screen. Use **Add playlist** to create a saved target/source/artist configuration. Each dashboard row can be updated immediately, edited, opened in Spotify, or deleted. **Update all** processes every saved configuration after confirmation and reports progress and failures.
+
+Use **Verify Spotify links** before saving to visually confirm all three resources. Some Spotify-made editorial playlists return `Resource not found` from the Web API even though they open in Spotify. In that case, copy the songs into a playlist in your own library and use the copied playlist as the source.
 
 **Randomized mix** reads every track from the source playlist and the selected artist's albums and singles. It chooses the requested artist allocation first, fills the remaining capacity from the source, deduplicates by Spotify track ID, randomizes the final order, and replaces the target in batches of 100.
 
