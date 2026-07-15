@@ -5,11 +5,14 @@ import {
   CircleAlert,
   Disc3,
   ExternalLink,
+  LayoutDashboard,
   ListMusic,
   LoaderCircle,
   LogIn,
   LogOut,
   Music2,
+  Pencil,
+  Plus,
   RefreshCw,
   Shuffle,
   Sparkles,
@@ -48,6 +51,7 @@ type SavedMix = {
   artistUrl: string
   maximumSongs: number
   artistSongCount: number
+  lastUpdated?: string
 }
 
 type Preview = {
@@ -74,6 +78,8 @@ function App() {
   const [artistUrl, setArtistUrl] = useState('')
   const [maximumSongs, setMaximumSongs] = useState(200)
   const [artistSongCount, setArtistSongCount] = useState(20)
+  const [view, setView] = useState<'dashboard' | 'editor'>('dashboard')
+  const [editingId, setEditingId] = useState<string | null>(null)
   const [preview, setPreview] = useState<Preview | null>(null)
   const [savedMixes, setSavedMixes] = useState<SavedMix[]>(readSavedMixes)
   const [confirmUpdateAll, setConfirmUpdateAll] = useState(false)
@@ -269,6 +275,51 @@ function App() {
     setArtistSongCount(mix.artistSongCount)
     setPreview(null)
     setNotice(null)
+    setEditingId(mix.id)
+    setView('editor')
+  }
+
+  function startNewMix() {
+    setTargetUrl('')
+    setSourceUrl('')
+    setArtistUrl('')
+    setMaximumSongs(200)
+    setArtistSongCount(20)
+    setEditingId(null)
+    setPreview(null)
+    setNotice(null)
+    setView('editor')
+  }
+
+  async function saveConfiguration() {
+    if (!clientId) return
+    setBusy(editingId ? 'Saving playlist settings' : 'Adding playlist')
+    setNotice(null)
+    try {
+      const client = new SpotifyClient(clientId)
+      const base = await loadBase(client)
+      if (!base.artistId) throw new Error('Enter a valid Spotify artist URL.')
+      const artist = await client.getArtist(base.artistId)
+      saveMix({
+        id: base.targetId,
+        targetName: base.target.name,
+        sourceName: base.source.name,
+        artistName: artist.name,
+        targetUrl,
+        sourceUrl,
+        artistUrl,
+        maximumSongs,
+        artistSongCount,
+        lastUpdated: savedMixes.find((mix) => mix.id === base.targetId)?.lastUpdated,
+      })
+      setNotice({ kind: 'success', message: `${base.target.name} was saved.` })
+      setEditingId(null)
+      setView('dashboard')
+    } catch (error) {
+      setNotice({ kind: 'error', message: errorMessage(error) })
+    } finally {
+      setBusy(null)
+    }
   }
 
   function removeSavedMix(id: string) {
@@ -276,6 +327,48 @@ function App() {
     localStorage.setItem(SAVED_MIXES_KEY, JSON.stringify(next))
     setSavedMixes(next)
     setConfirmUpdateAll(false)
+  }
+
+  async function updateMix(client: SpotifyClient, mix: SavedMix, currentUser: SpotifyUser) {
+    const targetId = spotifyIdFromUrl(mix.targetUrl, 'playlist')
+    const sourceId = spotifyIdFromUrl(mix.sourceUrl, 'playlist')
+    const artistId = spotifyIdFromUrl(mix.artistUrl, 'artist')
+    if (!targetId || !sourceId || !artistId) {
+      throw new Error('Saved Spotify URLs are no longer valid.')
+    }
+    const [target, sourceTracks, artistTracks] = await Promise.all([
+      client.getPlaylist(targetId),
+      client.getPlaylistTracks(sourceId),
+      client.getArtistTracks(artistId),
+    ])
+    if (target.owner.id !== currentUser.id) {
+      throw new Error('The target is not owned by the logged-in account.')
+    }
+    await client.replacePlaylist(
+      targetId,
+      buildCuration({
+        sourceTracks,
+        artistTracks,
+        maximumSongs: mix.maximumSongs,
+        artistSongCount: mix.artistSongCount,
+      }),
+    )
+  }
+
+  async function updateOneMix(mix: SavedMix) {
+    if (!clientId) return
+    setBusy(`Updating ${mix.targetName}`)
+    setNotice(null)
+    try {
+      const client = new SpotifyClient(clientId)
+      await updateMix(client, mix, user ?? (await client.getCurrentUser()))
+      saveMix({ ...mix, lastUpdated: new Date().toISOString() })
+      setNotice({ kind: 'success', message: `${mix.targetName} was updated.` })
+    } catch (error) {
+      setNotice({ kind: 'error', message: `${mix.targetName}: ${errorMessage(error)}` })
+    } finally {
+      setBusy(null)
+    }
   }
 
   async function updateAllMixes() {
@@ -298,30 +391,12 @@ function App() {
       for (const [index, mix] of savedMixes.entries()) {
         activeMix = mix
         setBusy(`Updating ${index + 1}/${savedMixes.length}: ${mix.targetName}`)
-        const targetId = spotifyIdFromUrl(mix.targetUrl, 'playlist')
-        const sourceId = spotifyIdFromUrl(mix.sourceUrl, 'playlist')
-        const artistId = spotifyIdFromUrl(mix.artistUrl, 'artist')
-        if (!targetId || !sourceId || !artistId) {
-          throw new Error('Saved Spotify URLs are no longer valid.')
-        }
-        const [target, sourceTracks, artistTracks] = await Promise.all([
-          client.getPlaylist(targetId),
-          client.getPlaylistTracks(sourceId),
-          client.getArtistTracks(artistId),
-        ])
-        if (target.owner.id !== currentUser.id) {
-          throw new Error('The target is not owned by the logged-in account.')
-        }
-        await client.replacePlaylist(
-          targetId,
-          buildCuration({
-            sourceTracks,
-            artistTracks,
-            maximumSongs: mix.maximumSongs,
-            artistSongCount: mix.artistSongCount,
-          }),
-        )
+        await updateMix(client, mix, currentUser)
       }
+      const updatedAt = new Date().toISOString()
+      const next = savedMixes.map((mix) => ({ ...mix, lastUpdated: updatedAt }))
+      localStorage.setItem(SAVED_MIXES_KEY, JSON.stringify(next))
+      setSavedMixes(next)
       setNotice({
         kind: 'success',
         message: `Updated all ${savedMixes.length} saved playlists successfully.`,
@@ -352,10 +427,14 @@ function App() {
   return (
     <div className="app-shell">
       <header className="topbar">
-        <a className="brand" href={import.meta.env.BASE_URL}>
+        <button className="brand brand-button" type="button" onClick={() => setView('dashboard')}>
           <span className="brand-mark"><Disc3 size={20} /></span>
           Playlist Studio
-        </a>
+        </button>
+        <nav className="topnav">
+          <button className={view === 'dashboard' ? 'active' : ''} type="button" onClick={() => setView('dashboard')}><LayoutDashboard size={16} /> Playlists</button>
+          <button className={view === 'editor' ? 'active' : ''} type="button" onClick={startNewMix}><Plus size={16} /> Add playlist</button>
+        </nav>
         <div className="account">
           <span className="account-avatar">
             {user?.images?.[0] ? <img src={user.images[0].url} alt="" /> : <UserRound size={16} />}
@@ -365,11 +444,51 @@ function App() {
         </div>
       </header>
 
-      <main className="workspace">
+      {view === 'dashboard' ? (
+        <main className="dashboard">
+          <div className="dashboard-header">
+            <div><p className="eyebrow">Playlist operations</p><h1>Your playlists</h1><p>Manage every curated mix from one place.</p></div>
+            <div className="dashboard-actions">
+              {savedMixes.length > 0 && <button className={`secondary-button${confirmUpdateAll ? ' danger' : ''}`} type="button" onClick={updateAllMixes} disabled={Boolean(busy)}><RefreshCw size={16} /> {confirmUpdateAll ? `Confirm update ${savedMixes.length}` : 'Update all'}</button>}
+              <button className="primary-button" type="button" onClick={startNewMix}><Plus size={17} /> Add playlist</button>
+            </div>
+          </div>
+          {notice && <Notice {...notice} />}
+          <div className="dashboard-stats">
+            <span><strong>{savedMixes.length}</strong><small>Managed playlists</small></span>
+            <span><strong>{savedMixes.reduce((total, mix) => total + mix.maximumSongs, 0)}</strong><small>Maximum songs</small></span>
+            <span><strong>{savedMixes.filter((mix) => mix.lastUpdated).length}</strong><small>Updated playlists</small></span>
+          </div>
+          {busy && <div className="dashboard-progress"><LoaderCircle className="spin" size={17} /> {busy}</div>}
+          {savedMixes.length ? (
+            <div className="playlist-table-wrap">
+              <table className="playlist-table">
+                <thead><tr><th>Target playlist</th><th>Source</th><th>Required artist</th><th>Mix</th><th>Last updated</th><th><span className="sr-only">Actions</span></th></tr></thead>
+                <tbody>{savedMixes.map((mix) => (
+                  <tr key={mix.id}>
+                    <td><div className="playlist-cell"><span><ListMusic size={18} /></span><strong>{mix.targetName}</strong></div></td>
+                    <td>{mix.sourceName}</td><td>{mix.artistName}</td>
+                    <td><strong>{mix.maximumSongs}</strong> songs · {mix.artistSongCount} artist</td>
+                    <td>{mix.lastUpdated ? new Date(mix.lastUpdated).toLocaleString() : 'Not updated yet'}</td>
+                    <td><div className="row-actions">
+                      <button type="button" onClick={() => updateOneMix(mix)} disabled={Boolean(busy)} title={`Update ${mix.targetName}`}><RefreshCw size={15} /></button>
+                      <button type="button" onClick={() => loadSavedMix(mix)} title={`Edit ${mix.targetName}`}><Pencil size={15} /></button>
+                      <a href={mix.targetUrl} target="_blank" rel="noreferrer" title={`Open ${mix.targetName} in Spotify`}><ExternalLink size={15} /></a>
+                      <button className="delete-action" type="button" onClick={() => removeSavedMix(mix.id)} title={`Delete ${mix.targetName}`}><Trash2 size={15} /></button>
+                    </div></td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="dashboard-empty"><span><ListMusic size={25} /></span><h2>No playlists yet</h2><p>Add your first target, source, and required artist to start managing updates.</p><button className="primary-button" type="button" onClick={startNewMix}><Plus size={17} /> Add your first playlist</button></div>
+          )}
+        </main>
+      ) : <main className="workspace">
         <aside className="control-panel">
           <div className="section-heading">
-            <span>01</span>
-            <div><p>Playlist inputs</p><h1>Build the mix</h1></div>
+            <span>{editingId ? 'Edit' : 'New'}</span>
+            <div><p>Playlist configuration</p><h1>{editingId ? 'Edit the mix' : 'Add playlist'}</h1></div>
           </div>
 
           <label>
@@ -390,6 +509,11 @@ function App() {
             <label><span>Artist songs</span><input type="number" min="1" max={maximumSongs} value={artistSongCount} onChange={(event) => setArtistSongCount(clamp(Number(event.target.value), 1, maximumSongs))} /></label>
           </div>
 
+          <div className="editor-actions">
+            <button className="secondary-button" type="button" onClick={() => setView('dashboard')}>Cancel</button>
+            <button className="primary-button" type="button" onClick={saveConfiguration} disabled={Boolean(busy)}><Check size={17} /> Save playlist</button>
+          </div>
+
           <button className="primary-button" type="button" onClick={prepareCuration} disabled={Boolean(busy)}>
             {busy ? <LoaderCircle className="spin" size={18} /> : <Shuffle size={18} />} Preview randomized mix
           </button>
@@ -399,30 +523,6 @@ function App() {
             <button className="secondary-button" type="button" onClick={prepareLatest} disabled={Boolean(busy)}><RefreshCw size={16} /> Latest 10</button>
           </div>
 
-          <section className="saved-mixes">
-            <div className="saved-heading">
-              <div><strong>Saved playlists</strong><p>Loaded automatically after a successful preview.</p></div>
-              <span>{savedMixes.length}</span>
-            </div>
-            {savedMixes.length ? (
-              <>
-                <div className="saved-list">
-                  {savedMixes.map((mix) => (
-                    <div className="saved-row" key={mix.id}>
-                      <button type="button" onClick={() => loadSavedMix(mix)}>
-                        <ListMusic size={16} />
-                        <span><strong>{mix.targetName}</strong><small>From {mix.sourceName} + {mix.artistName}</small></span>
-                      </button>
-                      <button className="remove-mix" type="button" onClick={() => removeSavedMix(mix.id)} title={`Forget ${mix.targetName}`}><Trash2 size={15} /></button>
-                    </div>
-                  ))}
-                </div>
-                <button className={`update-all-button${confirmUpdateAll ? ' confirm' : ''}`} type="button" onClick={updateAllMixes} disabled={Boolean(busy)}>
-                  <RefreshCw size={16} /> {confirmUpdateAll ? `Confirm update ${savedMixes.length}` : 'Update all playlists'}
-                </button>
-              </>
-            ) : <p className="saved-empty">Preview a randomized mix to remember it here.</p>}
-          </section>
         </aside>
 
         <section className="preview-panel">
@@ -441,7 +541,7 @@ function App() {
             </div>
           )}
         </section>
-      </main>
+      </main>}
     </div>
   )
 }
